@@ -4,7 +4,7 @@ import anthropic
 import os
 
 # --- CONFIG ---
-API_KEY = "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"  # paste your key
+API_KEY = "your-api-key-here"  # paste your key
 BASE_FOLDER = "D:\\concall_transcripts"
 
 # --- COMPANY DEFINITIONS ---
