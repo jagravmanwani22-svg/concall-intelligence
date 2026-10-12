@@ -1,32 +1,53 @@
 import streamlit as st
 import anthropic
 import os
+from datetime import datetime
+from PyPDF2 import PdfReader
 
 # --- CONFIG ---
 API_KEY = st.secrets["ANTHROPIC_API_KEY"]
-TRANSCRIPT_FOLDER = "."
+FOLDER = "."
 
-COMPANIES = {
-    "GE Vernova T&D India": "GE_Vernova",
-    "Nuvama Wealth Management": "Nuvama",
-    "ideaForge Technology": "ideaForge"
+# Optional: nicer names for the dropdown. Anything not listed here
+# is shown using its file prefix, with underscores turned into spaces.
+DISPLAY_NAMES = {
+    "GE_Vernova": "GE Vernova T&D India",
+    "Nuvama": "Nuvama Wealth Management",
+    "ideaForge": "ideaForge Technology",
 }
 
-# --- LOAD TRANSCRIPTS ---
+# --- FILE HANDLING ---
+def read_file(path):
+    if path.endswith(".pdf"):
+        reader = PdfReader(path)
+        return "".join(page.extract_text() or "" for page in reader.pages)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def quarter_sort_key(label):
+    # Sorts labels like Nov25, Feb26, Aug26 in date order
+    try:
+        return datetime.strptime(label, "%b%y")
+    except ValueError:
+        return datetime.min
+
+def discover_companies():
+    # Finds every file named Company_MonYY.pdf or Company_MonYY.txt
+    companies = {}
+    for filename in os.listdir(FOLDER):
+        if not filename.endswith((".txt", ".pdf")):
+            continue
+        name = filename.rsplit(".", 1)[0]
+        if "_" not in name:
+            continue
+        prefix, quarter = name.rsplit("_", 1)
+        companies.setdefault(prefix, {})[quarter] = filename
+    return companies
+
 @st.cache_data
-def load_company_transcripts(company_name):
-    prefix = COMPANIES[company_name]
-    transcripts = {}
-    
-    for filename in sorted(os.listdir(TRANSCRIPT_FOLDER)):
-        if filename.startswith(prefix) and filename.endswith(".txt"):
-            path = os.path.join(TRANSCRIPT_FOLDER, filename)
-            with open(path, 'r', encoding='utf-8') as f:
-                text = f.read()
-            quarter_label = filename.replace(prefix + "_", "").replace(".txt", "")
-            transcripts[quarter_label] = text
-    
-    return transcripts
+def load_transcripts(prefix, files):
+    ordered = sorted(files, key=lambda item: quarter_sort_key(item[0]))
+    return {q: read_file(os.path.join(FOLDER, f)) for q, f in ordered}
 
 # --- QUERY CLAUDE ---
 def ask_claude(question, transcripts, company_name):
@@ -34,7 +55,7 @@ def ask_claude(question, transcripts, company_name):
     combined = ""
     for quarter, text in transcripts.items():
         combined += f"\n\n--- {quarter} EARNINGS CALL ---\n{text}"
-    
+
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1500,
@@ -62,18 +83,24 @@ st.subheader("AI-powered earnings call analysis for Indian listed companies")
 st.markdown("Built by Jagrav Manwani | CFA Level I | Independent Equity Research")
 st.divider()
 
-company = st.selectbox(
-    "Select company:",
-    options=list(COMPANIES.keys())
-)
-
-transcripts = load_company_transcripts(company)
-available = list(transcripts.keys())
-
-if not transcripts:
-    st.error(f"No transcripts found for {company}. Check file naming.")
+companies = discover_companies()
+if not companies:
+    st.error("No transcripts found. Name files like Company_Aug26.pdf")
     st.stop()
 
+def display_name(prefix):
+    return DISPLAY_NAMES.get(prefix, prefix.replace("_", " "))
+
+prefix = st.selectbox(
+    "Select company:",
+    options=sorted(companies.keys(), key=lambda p: display_name(p).lower()),
+    format_func=display_name,
+)
+company = display_name(prefix)
+
+files = tuple(sorted(companies[prefix].items()))
+transcripts = load_transcripts(prefix, files)
+available = list(transcripts.keys())
 st.caption(f"Available transcripts: {' | '.join(available)}")
 st.divider()
 
@@ -91,16 +118,13 @@ presets = [
     "What guidance has management given for next quarter or year?",
 ]
 
-if 'question' not in st.session_state:
-    st.session_state.question = ''
+if "question" not in st.session_state:
+    st.session_state.question = ""
 
 for i, q in enumerate(presets):
-    if i % 2 == 0:
-        if col1.button(q, key=f"btn_{i}"):
-            st.session_state.question = q
-    else:
-        if col2.button(q, key=f"btn_{i}"):
-            st.session_state.question = q
+    col = col1 if i % 2 == 0 else col2
+    if col.button(q, key=f"btn_{i}"):
+        st.session_state.question = q
 
 st.divider()
 
@@ -109,7 +133,7 @@ question = st.text_input("Or type your own question:", value=st.session_state.qu
 if st.button("Ask", type="primary") and question:
     with st.spinner(f"Analysing {company} transcripts..."):
         answer = ask_claude(question, transcripts, company)
-    
+
     st.markdown(f"### {company} — Answer")
     st.markdown(answer)
     st.divider()
